@@ -1,8 +1,7 @@
-
 create or alter proc sp_MIHCode_Permission
-	   @LoginUser sysname = NULL,  
-	   @permission sysname = NULL,   
-	   @UserDB sysname = NULL
+@loginuser sysname = NULL,
+@Permission sysname = NULL,
+@userDB sysname = NULL
 as
 begin
 
@@ -38,7 +37,8 @@ Copyright (c) 2022 MIH Code LLC
 
 -- consider sp_help_permissions instead if don't have impersonate permission
 /*
-Last update 4/5/2022 : Monktar Bello - put in @UserDB and filtered with @LoginUser  
+Last update 10/19/2022 : Monktar Bello - fixed not return objects' permission on @userDB 
+ 4/5/2022 : Monktar Bello - put in @UserDB and filtered with @LoginUser  
 */
 /*============================================================================
   File:     UserPermission_DB_Server.sql
@@ -308,61 +308,67 @@ BEGIN
     end
 
     --MEMBERS OF ROLES
-    INSERT INTO #uROLES
-    exec sp_helpMemberOfRole 
-    --exec sp_helpMemberOfRole    @UserLogin = dkarake ,   @srvrolename  = NULL,  @rolename  =   'db_datawriter' 
-    -- EXEC sp_helprolemember 'devops_sr';
-    -- or
-    --    --members and their principals on database level
-    --SELECT rol.name AS DatabaseRoleName,   
-    --   isnull (us.name, '') AS UserMemberName, us.principal_id MemberID   
-    -- FROM sys.database_principals AS rol    
-    -- LEFT JOIN  sys.database_role_members AS mb
-    --	   ON mb.role_principal_id = rol.principal_id  
-    -- LEFT JOIN sys.database_principals AS us  
-    --	   ON mb.member_principal_id = us.principal_id  
-    --WHERE rol.type = 'R' and rol.name = 'devdba'
-    --ORDER BY  rol.name;  
+    set @clause = '
+	   INSERT INTO #uROLES
+	   exec sp_helpMemberOfRole 
+    '
+    EXEC sp_ineachdb @command = @clause
 
-    SELECT DISTINCT PrincipalName,  rolename, RoleON Role_CurrentDatabase
+
+    SELECT DISTINCT PrincipalName,  rolename, RoleON 
     FROM #uROLES
     WHERE (PrincipalName = @LoginUser OR  @LoginUser IS NULL) 
     ORDER BY PrincipalName
 
-    --    select * from sys.database_principals where principal_id in (7,95)
-    select principals.name principalName, principal_id PrincipalID
-    , permissionst.permission_name, permissionst.state_desc, permissionst.class_desc
-    , OBJECT_SCHEMA_NAME(permissionst.major_id) SchemaName
-    ,  object_name( permissionst.major_id) ObjName,
-    OBJECTPROPERTY(permissionst.major_id, 'IsTable') AS [IsTable],
-    OBJECTPROPERTY(permissionst.major_id, 'IsTrigger') AS [IsTrigger],
-    OBJECTPROPERTY(permissionst.major_id, 'IsView') AS [IsView],
-    OBJECTPROPERTY(permissionst.major_id, 'IsProcedure') AS [IsProcedure], DB_NAME() CurrentDatabase
-    from sys.database_principals principals
-    join sys.database_permissions permissionst
-    on permissionst.grantee_principal_id = principals.principal_id
-    WHERE principal_id > 0 AND EXISTS(SELECT 1 FROM #uROLES r where r.rolename = principals.name and (r.PrincipalName = @LoginUser OR  @LoginUser IS NULL))
-    --AND principals.name in ('sqldev_sr','sqldev_jr')
-    --and permission_name ='UPDATE'
-    order by principalName, permission_name
+    
+    SELECT rol.name AS DatabaseRoleName,   
+       isnull (us.name, '') AS UserMemberName, us.principal_id MemberID   
+     FROM sys.database_principals AS rol    
+     LEFT JOIN  sys.database_role_members AS mb
+    	   ON mb.role_principal_id = rol.principal_id  
+     LEFT JOIN sys.database_principals AS us  
+    	   ON mb.member_principal_id = us.principal_id  
+    WHERE rol.type = 'R' and 
+		exists( select 1/0 from #uROLES r where r.rolename = rol.name and (r.PrincipalName = @LoginUser OR  @LoginUser IS NULL) )
+    order by 1
+
+
+    if @LoginUser is not null
+	   delete from #uROLES where PrincipalName <> @LoginUser
+
+
+    create table #objectPermission (
+    principalName sysname,	PrincipalID int,	permission_name sysname,	state_desc varchar(128),	
+    class_desc varchar(128),	SchemaName sysname,	ObjName sysname,	IsTable bit,	IsTrigger bit,	IsView bit,	IsProcedure bit,	CurrentDatabase sysname
+    )
+
+    	   set @clause = '
+        insert into #objectPermission
+	   select principals.name principalName, principal_id PrincipalID
+	   , permissionst.permission_name 
+	   , permissionst.state_desc 
+	   , permissionst.class_desc 
+	   , OBJECT_SCHEMA_NAME(permissionst.major_id) SchemaName 
+	   ,  object_name( permissionst.major_id) ObjName ,
+	   OBJECTPROPERTY(permissionst.major_id, ''IsTable'') AS [IsTable],
+	   OBJECTPROPERTY(permissionst.major_id, ''IsTrigger'') AS [IsTrigger],
+	   OBJECTPROPERTY(permissionst.major_id, ''IsView'') AS [IsView],
+	   OBJECTPROPERTY(permissionst.major_id, ''IsProcedure'') AS [IsProcedure]
+	   , DB_NAME() CurrentDatabase 
+	   from sys.database_principals principals
+	   join sys.database_permissions permissionst
+	   on permissionst.grantee_principal_id = principals.principal_id
+	   WHERE principal_id > 0 AND EXISTS(SELECT 1 FROM #uROLES r where r.rolename = principals.name COLLATE DATABASE_DEFAULT )
+	   and OBJECT_SCHEMA_NAME(permissionst.major_id) is not null
+	   order by principalName, permission_name
+	   '
+	   EXEC sp_ineachdb @command = @clause
 
 
 
-select '*********hidden permission from public commented **********'
--- https://www.mssqltips.com/sqlservertip/4228/sql-server-permissions-granted-to-all-users-by-default/
---    select principals.name principalName, principal_id PrincipalID
---, permissionst.permission_name, permissionst.state_desc, permissionst.class_desc
---,  object_name( permissionst.major_id) ObjName,
---OBJECTPROPERTY(permissionst.major_id, 'IsTable') AS [IsTable],
---OBJECTPROPERTY(permissionst.major_id, 'IsTrigger') AS [IsTrigger],
---OBJECTPROPERTY(permissionst.major_id, 'IsView') AS [IsView],
---OBJECTPROPERTY(permissionst.major_id, 'IsProcedure') AS [IsProcedure], DB_NAME() CurrentDatabase
---from sys.database_principals principals
---right join sys.database_permissions permissionst on permissionst.grantee_principal_id = principals.principal_id
---WHERE 
--- principals.name in ('public') and permissionst.permission_name = 'Execute'
-----and permission_name ='UPDATE'
---order by principalName, permission_name
+    select * from  #objectPermission
+    where CurrentDatabase = @UserDB OR  @UserDB IS NULL
+
 
     --all logins
     if @LoginUser is null
@@ -386,8 +392,9 @@ select '*********hidden permission from public commented **********'
     IF OBJECT_ID('tempDB..#uROLES') IS NOT NULL
 	   DROP TABLE #uROLES
 
+    IF OBJECT_ID('tempDB..#objectPermission') IS NOT NULL
+	   DROP TABLE #objectPermission
 
-    --select USER_NAME() dbUser, SUSER_SNAME() ServerUser
   
 END
 
